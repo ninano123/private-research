@@ -1,17 +1,71 @@
-// ── Data Layer ──────────────────────────────────────────────
-const STORAGE_KEY = 'research-queue-data';
+// ── Quarter Utilities ───────────────────────────────────────
+function getCurrentQuarter() {
+  const now = new Date();
+  const q = Math.ceil((now.getMonth() + 1) / 3);
+  return `${now.getFullYear()}-Q${q}`;
+}
 
-function loadData() {
+function parseQuarter(qStr) {
+  const [year, qPart] = qStr.split('-Q');
+  return { year: parseInt(year), quarter: parseInt(qPart) };
+}
+
+function prevQuarter(qStr) {
+  const { year, quarter } = parseQuarter(qStr);
+  if (quarter === 1) return `${year - 1}-Q4`;
+  return `${year}-Q${quarter - 1}`;
+}
+
+function nextQuarter(qStr) {
+  const { year, quarter } = parseQuarter(qStr);
+  if (quarter === 4) return `${year + 1}-Q1`;
+  return `${year}-Q${quarter + 1}`;
+}
+
+// ── Data Layer ──────────────────────────────────────────────
+const LEGACY_STORAGE_KEY = 'research-queue-data';
+
+function storageKey(quarter) {
+  return `research-queue-${quarter}`;
+}
+
+function loadFromStorage(quarter) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const raw = localStorage.getItem(storageKey(quarter));
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function saveData(topics) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(topics));
+function saveToStorage(quarter, data) {
+  localStorage.setItem(storageKey(quarter), JSON.stringify(data));
+}
+
+async function loadFromFile(quarter) {
+  try {
+    const res = await fetch(`data/${quarter}/queue.json`, { cache: 'no-cache' });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.topics || [];
+  } catch {
+    return null;
+  }
+}
+
+async function loadIndex() {
+  try {
+    const res = await fetch('data/index.json', { cache: 'no-cache' });
+    if (!res.ok) return { quarters: [getCurrentQuarter()] };
+    return await res.json();
+  } catch {
+    return { quarters: [getCurrentQuarter()] };
+  }
+}
+
+function saveData(topicsData) {
+  saveToStorage(activeQuarter, topicsData);
+  updateSyncIndicator(true);
 }
 
 function generateId() {
@@ -31,10 +85,13 @@ function createTopic(title, description = '') {
 }
 
 // ── State ──────────────────────────────────────────────────
-let topics = loadData();
+let activeQuarter = getCurrentQuarter();
+let availableQuarters = [getCurrentQuarter()];
+let topics = [];
 let selectedId = null;
 let currentFilter = 'all';
 let expandedNodes = new Set(JSON.parse(localStorage.getItem('research-expanded') || '[]'));
+let hasUnsavedChanges = false;
 
 function saveExpanded() {
   localStorage.setItem('research-expanded', JSON.stringify([...expandedNodes]));
@@ -99,6 +156,52 @@ function getPath(id) {
   const ancestors = getAncestors(id);
   const topic = findTopic(id);
   return [...ancestors, topic].map(t => t.title).join(' / ');
+}
+
+// ── Sync Indicator ─────────────────────────────────────────
+function updateSyncIndicator(dirty) {
+  hasUnsavedChanges = dirty;
+  const indicator = document.getElementById('sync-indicator');
+  if (!indicator) return;
+  if (dirty) {
+    indicator.textContent = 'Unsaved';
+    indicator.className = 'sync-indicator dirty';
+  } else {
+    indicator.textContent = 'Synced';
+    indicator.className = 'sync-indicator synced';
+  }
+}
+
+// ── Quarter Selector ───────────────────────────────────────
+function renderQuarterSelector() {
+  const selector = document.getElementById('quarter-selector');
+  if (!selector) return;
+
+  const prev = selector.querySelector('.quarter-prev');
+  const label = selector.querySelector('.quarter-label');
+  const next = selector.querySelector('.quarter-next');
+
+  label.textContent = activeQuarter;
+
+  const isCurrentQ = activeQuarter === getCurrentQuarter();
+  next.disabled = isCurrentQ;
+}
+
+async function switchQuarter(quarter) {
+  activeQuarter = quarter;
+  selectedId = null;
+
+  let data = loadFromStorage(quarter);
+  if (!data) {
+    data = await loadFromFile(quarter);
+    if (data) saveToStorage(quarter, data);
+  }
+  topics = data || [];
+
+  renderQuarterSelector();
+  showQueueView();
+  renderTree();
+  updateSyncIndicator(false);
 }
 
 // ── Rendering: Tree ────────────────────────────────────────
@@ -491,16 +594,28 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
   });
 });
 
-// ── Export / Import ────────────────────────────────────────
+// ── Export / Import (Quarterly JSON) ───────────────────────
+function buildQuarterlyJSON(quarter, topicsData) {
+  return {
+    quarter: quarter,
+    updatedAt: new Date().toISOString(),
+    topicCount: topicsData.length,
+    subTopicCount: flattenAll(topicsData).length - topicsData.length,
+    topics: topicsData,
+  };
+}
+
 document.getElementById('btn-export').addEventListener('click', () => {
-  const data = JSON.stringify(topics, null, 2);
+  const payload = buildQuarterlyJSON(activeQuarter, topics);
+  const data = JSON.stringify(payload, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'research-queue-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.download = `queue.json`;
   a.click();
   URL.revokeObjectURL(url);
+  updateSyncIndicator(false);
 });
 
 const importFileInput = document.getElementById('import-file');
@@ -515,9 +630,28 @@ importFileInput.addEventListener('change', (e) => {
   reader.onload = (ev) => {
     try {
       const imported = JSON.parse(ev.target.result);
-      if (!Array.isArray(imported)) throw new Error('Invalid format');
-      if (!confirm(`Import ${imported.length} topic(s)? This will replace current data.`)) return;
-      topics = imported;
+      // Support both quarterly format { quarter, topics: [...] } and legacy array format
+      let importedTopics;
+      let importedQuarter = activeQuarter;
+
+      if (Array.isArray(imported)) {
+        importedTopics = imported;
+      } else if (imported.topics && Array.isArray(imported.topics)) {
+        importedTopics = imported.topics;
+        if (imported.quarter) importedQuarter = imported.quarter;
+      } else {
+        throw new Error('Invalid format');
+      }
+
+      const count = flattenAll(importedTopics).length;
+      if (!confirm(`Import ${importedTopics.length} topic(s) (${count} total with sub-topics) into ${importedQuarter}?`)) return;
+
+      if (importedQuarter !== activeQuarter) {
+        activeQuarter = importedQuarter;
+        renderQuarterSelector();
+      }
+
+      topics = importedTopics;
       saveData(topics);
       showQueueView();
       renderTree();
@@ -527,6 +661,23 @@ importFileInput.addEventListener('change', (e) => {
   };
   reader.readAsText(file);
   importFileInput.value = '';
+});
+
+// ── Quarter Navigation ─────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const prevBtn = document.querySelector('.quarter-prev');
+  const nextBtn = document.querySelector('.quarter-next');
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', () => {
+      switchQuarter(prevQuarter(activeQuarter));
+    });
+  }
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      switchQuarter(nextQuarter(activeQuarter));
+    });
+  }
 });
 
 // ── Keyboard shortcuts ─────────────────────────────────────
@@ -544,5 +695,35 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Init ───────────────────────────────────────────────────
-renderTree();
-renderQueue();
+async function init() {
+  // Load index to know available quarters
+  const index = await loadIndex();
+  availableQuarters = index.quarters || [getCurrentQuarter()];
+
+  // Try loading from localStorage first (has latest edits), then from file
+  let data = loadFromStorage(activeQuarter);
+  if (!data) {
+    data = await loadFromFile(activeQuarter);
+    if (data) saveToStorage(activeQuarter, data);
+  }
+
+  // Migrate legacy data if nothing found
+  if (!data) {
+    try {
+      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (legacy) {
+        data = JSON.parse(legacy);
+        saveToStorage(activeQuarter, data);
+      }
+    } catch { /* ignore */ }
+  }
+
+  topics = data || [];
+
+  renderQuarterSelector();
+  renderTree();
+  renderQueue();
+  updateSyncIndicator(false);
+}
+
+init();
