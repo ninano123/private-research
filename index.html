@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Research Queue</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Research Queue</h1>
+      <div class="header-actions">
+        <button id="btn-export" title="Export data">Export</button>
+        <button id="btn-import" title="Import data">Import</button>
+        <input type="file" id="import-file" accept=".json" hidden>
+      </div>
+    </header>
+
+    <div class="main-layout">
+      <!-- Sidebar: folder tree -->
+      <aside id="sidebar">
+        <div class="sidebar-header">
+          <h2>Topics</h2>
+          <button id="btn-add-root" title="Add root topic">+ New</button>
+        </div>
+        <div id="tree-container"></div>
+      </aside>
+
+      <!-- Main content area -->
+      <main id="content">
+        <!-- Queue View (default) -->
+        <section id="queue-view" class="view active">
+          <div class="view-header">
+            <h2>Research Queue</h2>
+            <div class="queue-filters">
+              <button class="filter-btn active" data-filter="all">All</button>
+              <button class="filter-btn" data-filter="queued">Queued</button>
+              <button class="filter-btn" data-filter="in_progress">In Progress</button>
+              <button class="filter-btn" data-filter="completed">Completed</button>
+            </div>
+          </div>
+          <div id="queue-list"></div>
+        </section>
+
+        <!-- Topic Detail View -->
+        <section id="detail-view" class="view">
+          <div class="detail-header">
+            <button id="btn-back" class="back-btn">&larr; Back</button>
+            <div class="breadcrumb" id="breadcrumb"></div>
+          </div>
+          <div class="detail-content">
+            <div class="detail-title-row">
+              <h2 id="detail-title" contenteditable="true"></h2>
+              <div class="detail-actions">
+                <select id="detail-status">
+                  <option value="queued">Queued</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                </select>
+                <button id="btn-delete-topic" class="danger-btn">Delete</button>
+              </div>
+            </div>
+            <div class="detail-description">
+              <label>Description</label>
+              <textarea id="detail-desc" placeholder="Describe the research topic..."></textarea>
+            </div>
+            <div class="detail-notes">
+              <label>Research Notes</label>
+              <textarea id="detail-notes" placeholder="Write your research findings here..."></textarea>
+            </div>
+            <div class="detail-children">
+              <div class="children-header">
+                <h3>Sub-Research</h3>
+                <button id="btn-add-child">+ Add Sub-topic</button>
+              </div>
+              <div id="children-list"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Modal for adding topics -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3 id="modal-title">New Topic</h3>
+      <input type="text" id="modal-input" placeholder="Topic title..." autofocus>
+      <textarea id="modal-desc-input" placeholder="Description (optional)..."></textarea>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="secondary-btn">Cancel</button>
+        <button id="modal-confirm">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
